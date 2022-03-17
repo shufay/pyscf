@@ -36,6 +36,9 @@ from pyscf.scf import chkfile
 from pyscf.data import nist
 from pyscf import __config__
 
+# Shu Fay's modules.
+import _libxc
+
 WITH_META_LOWDIN = getattr(__config__, 'scf_analyze_with_meta_lowdin', True)
 PRE_ORTH_METHOD = getattr(__config__, 'scf_analyze_pre_orth_method', 'ANO')
 MO_BASE = getattr(__config__, 'MO_BASE', 1)
@@ -46,7 +49,7 @@ MUTE_CHKFILE = getattr(__config__, 'scf_hf_SCF_mute_chkfile', False)
 if sys.version_info >= (3,):
     unicode = str
 
-def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
+def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1., 
            dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
     '''kernel: the SCF driver.
 
@@ -69,6 +72,10 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             | mf.dump_chk
 
     Kwargs:
+        ao : ndarray 
+            AOs evaluated on a real-space grid. Used for computing the electron density n.
+        weights : float
+            used in `_libxc.eval_rho` to check the electron number.
         conv_tol : float
             converge threshold.
         conv_tol_grad : float
@@ -108,6 +115,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     >>> print('conv = %s, E(HF) = %.12f' % (conv, e))
     conv = True, E(HF) = -1.081170784378
     '''
+    logger.info(mf, 'Using modified `mf.kernel` with electron density calculation.')
+
     if 'init_dm' in kwargs:
         raise RuntimeError('''
 You see this error message because of the API updates in pyscf v0.11.
@@ -122,6 +131,8 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         dm = mf.get_init_guess(mol, mf.init_guess)
     else:
         dm = dm0
+    
+    rho = _libxc.eval_rho(ao, dm, weights=weights, cell='simulation')
 
     h1e = mf.get_hcore(mol)
     vhf = mf.get_veff(mol, dm)
@@ -166,6 +177,7 @@ Keyword argument "init_dm" is replaced by "dm0"''')
     cput1 = logger.timer(mf, 'initialize scf', *cput0)
     for cycle in range(mf.max_cycle):
         dm_last = dm
+        rho_last = rho
         last_hf_e = e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis)
@@ -185,8 +197,13 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb = norm_gorb / numpy.sqrt(norm_gorb.size)
         norm_ddm = numpy.linalg.norm(dm-dm_last)
-        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g',
-                    cycle+1, e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm)
+
+        # Compute change in electron density, dn.
+        rho = _libxc.eval_rho(ao, dm, weights=weights, cell='simulation')
+        norm_drho = numpy.linalg.norm(rho-rho_last)
+
+        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g  |dn| = %4.3g',
+                    cycle+1, e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm, norm_drho)
 
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
@@ -210,6 +227,8 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         mo_energy, mo_coeff = mf.eig(fock, s1e)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm
+        rho = _libxc.eval_rho(ao, dm, weights=weights, cell='simulation')
+        rho_last = _libxc.eval_rho(ao, dm_last, weights=weights, cell='simulation')
         dm = lib.tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
         e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf), e_tot
@@ -219,6 +238,7 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb = norm_gorb / numpy.sqrt(norm_gorb.size)
         norm_ddm = numpy.linalg.norm(dm-dm_last)
+        norm_drho = numpy.linalg.norm(rho-rho_last)
 
         conv_tol = conv_tol * 10
         conv_tol_grad = conv_tol_grad * 3
@@ -226,8 +246,8 @@ Keyword argument "init_dm" is replaced by "dm0"''')
             scf_conv = mf.check_convergence(locals())
         elif abs(e_tot-last_hf_e) < conv_tol or norm_gorb < conv_tol_grad:
             scf_conv = True
-        logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g',
-                    e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm)
+        logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g  |drho|= %4.3g',
+                    e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm, norm_drho)
         if dump_chk:
             mf.dump_chk(locals())
 
@@ -1638,12 +1658,18 @@ class SCF(lib.StreamObject):
     # to check_convergence can overwrite the default convergence criteria
     check_convergence = None
 
-    def scf(self, dm0=None, **kwargs):
+    def scf(self, dm0=None, ao=None, weights=1., **kwargs):
         '''SCF main driver
 
         Kwargs:
             dm0 : ndarray
                 If given, it will be used as the initial guess density matrix
+
+            ao : ndarray 
+                AOs evaluated on a real-space grid. Used for computing the electron density n.
+
+            weights : float
+                used in `_libxc.eval_rho` to check the electron number.
 
         Examples:
 
@@ -1665,14 +1691,14 @@ class SCF(lib.StreamObject):
             self.converged, self.e_tot, \
                     self.mo_energy, self.mo_coeff, self.mo_occ = \
                     kernel(self, self.conv_tol, self.conv_tol_grad,
-                           dm0=dm0, callback=self.callback,
+                           ao=ao, weights=weights, dm0=dm0, callback=self.callback,
                            conv_check=self.conv_check, **kwargs)
         else:
             # Avoid to update SCF orbitals in the non-SCF initialization
             # (issue #495).  But run regular SCF for initial guess if SCF was
             # not initialized.
             self.e_tot = kernel(self, self.conv_tol, self.conv_tol_grad,
-                                dm0=dm0, callback=self.callback,
+                                ao=ao, weights=weights, dm0=dm0, callback=self.callback,
                                 conv_check=self.conv_check, **kwargs)[1]
 
         logger.timer(self, 'SCF', *cput0)
