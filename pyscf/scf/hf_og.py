@@ -47,12 +47,6 @@ SWITCH_SIZE = getattr(__config__, 'dft_numint_SWITCH_SIZE', 3000)
 if sys.version_info >= (3,):
     unicode = str
 
-############################################
-# Shu Fay's Additions
-############################################
-def is_hermitian(mat):
-    return numpy.allclose(mat.T.conj(), mat)
-
 # For drho evaluation in `kernel`.
 # Adapted from /moire/_libxc.py
 def eval_rho(ao, dm_kpts, weights=1., cell='unit', verbose=False):
@@ -99,7 +93,6 @@ def _dot_ao_dm(ao, dm):
     if nao < SWITCH_SIZE:
         return lib.dot(numpy.asarray(dm, order='C').T, ao.T).T
         #return lib.dot(ao, numpy.asarray(dm, order='C'))
-############################################
 
 def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1., 
            dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
@@ -167,19 +160,12 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
     >>> print('conv = %s, E(HF) = %.12f' % (conv, e))
     conv = True, E(HF) = -1.081170784378
     '''
-    logger.info(mf, '''Using modified `mf.kernel` with:\n 
-        1. electron density calculation
-        2. ddm = max(abs(dm - dm_last)) as convergence criterion 
-        3. conv_tol_grad = conv_tol_dm
-        ''')
-
-    logger.info(mf, 'DIIS: %s', mf.diis)
+    logger.info(mf, 'Using modified `mf.kernel` with electron density calculation.')
 
     if 'init_dm' in kwargs:
         raise RuntimeError('''
-        You see this error message because of the API updates in pyscf v0.11.
-        Keyword argument "init_dm" is replaced by "dm0"''')
-
+You see this error message because of the API updates in pyscf v0.11.
+Keyword argument "init_dm" is replaced by "dm0"''')
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol_grad is None:
         conv_tol_grad = numpy.sqrt(conv_tol)
@@ -190,7 +176,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
     #print('\n--- Setting dm0...')
     if dm0 is None:
         dm = mf.get_init_guess(mol, mf.init_guess)
-
     else:
         dm = dm0
     
@@ -211,7 +196,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
     s1e = mf.get_ovlp(mol)
     cond = lib.cond(s1e)
     logger.debug(mf, 'cond(S) = %s', cond)
-
     if numpy.max(cond)*1e-17 > conv_tol:
         logger.warn(mf, 'Singularity detected in overlap matrix (condition number = %4.3g). '
                     'SCF may be inaccurate and hard to converge.', numpy.max(cond))
@@ -225,13 +209,11 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
 
     if isinstance(mf.diis, lib.diis.DIIS):
         mf_diis = mf.diis
-
     elif mf.diis:
         assert issubclass(mf.DIIS, lib.diis.DIIS)
         mf_diis = mf.DIIS(mf, mf.diis_file)
         mf_diis.space = mf.diis_space
         mf_diis.rollback = mf.diis_space_rollback
-
     else:
         mf_diis = None
 
@@ -247,23 +229,10 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
     for cycle in range(mf.max_cycle):
         dm_last = dm
         rho_last = rho
-        e_tot_last = e_tot
+        last_hf_e = e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis)
         mo_energy, mo_coeff = mf.eig(fock, s1e)
-        mo_energy=numpy.array(mo_energy)
-        nkpts, nbasis = mo_energy[0].shape
-        
-        """
-        print('BANDS')
-        for s in range(2):
-            print(f'\ns = {s}')
-
-            for ik, mo_energy_kpt in enumerate(mo_energy[s]):
-                print(f'\nik = {ik}')
-                print(mo_energy_kpt[:5])
-        """
-
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
         # attach mo_coeff and mo_occ to dm to improve DFT get_veff efficiency
@@ -276,25 +245,20 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
         # be modified in some methods.
         fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         norm_gorb = numpy.linalg.norm(mf.get_grad(mo_coeff, mo_occ, fock))
-
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb = norm_gorb / numpy.sqrt(norm_gorb.size)
-
-        #norm_ddm = numpy.linalg.norm(dm-dm_last)
-        norm_ddm = numpy.amax(numpy.absolute(dm-dm_last))
+        norm_ddm = numpy.linalg.norm(dm-dm_last)
 
         # Compute change in electron density, drho.
         rho = eval_rho(ao, dm, weights=weights)
         norm_drho = numpy.linalg.norm(rho-rho_last)
 
-        logger.info(mf, 'cycle= %d E= %.15g  dE= %4.3g  |g|= %4.3g  |ddm|= %4.3g  |drho|= %4.3g',
-                    cycle+1, e_tot, e_tot-e_tot_last, norm_gorb, norm_ddm, norm_drho)
+        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g  |drho| = %4.3g',
+                    cycle+1, e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm, norm_drho)
 
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
-
-        #elif abs(e_tot-e_tot_last) < conv_tol and norm_gorb < conv_tol_grad:
-        elif (abs(e_tot-e_tot_last) < conv_tol) and (norm_ddm < conv_tol_grad):
+        elif abs(e_tot-last_hf_e) < conv_tol and norm_gorb < conv_tol_grad:
             scf_conv = True
 
         if dump_chk:
@@ -318,36 +282,27 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ao=None, weights=1.,
         rho_last = eval_rho(ao, dm_last, weights=weights)
         dm = lib.tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
-        e_tot, e_tot_last = mf.energy_tot(dm, h1e, vhf), e_tot
+        e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf), e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, dm)
         norm_gorb = numpy.linalg.norm(mf.get_grad(mo_coeff, mo_occ, fock))
-
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb = norm_gorb / numpy.sqrt(norm_gorb.size)
-
-        #norm_ddm = numpy.linalg.norm(dm-dm_last)
-        norm_ddm = numpy.amax(numpy.absolute(dm-dm_last))
+        norm_ddm = numpy.linalg.norm(dm-dm_last)
         norm_drho = numpy.linalg.norm(rho-rho_last)
 
         conv_tol = conv_tol * 10
         conv_tol_grad = conv_tol_grad * 3
-
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
-
-        #elif abs(e_tot-e_tot_last) < conv_tol or norm_gorb < conv_tol_grad:
-        elif (abs(e_tot-e_tot_last) < conv_tol) and (norm_ddm < conv_tol_grad):
+        elif abs(e_tot-last_hf_e) < conv_tol or norm_gorb < conv_tol_grad:
             scf_conv = True
-
         logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g  |drho|= %4.3g',
-                    e_tot, e_tot-e_tot_last, norm_gorb, norm_ddm, norm_drho)
-
+                    e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm, norm_drho)
         if dump_chk:
             mf.dump_chk(locals())
 
     logger.timer(mf, 'scf_cycle', *cput0)
-
     # A post-processing hook before return
     mf.post_kernel(locals())
     return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
@@ -1021,38 +976,24 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
     if h1e is None: h1e = mf.get_hcore()
     if vhf is None: vhf = mf.get_veff(mf.mol, dm)
     f = h1e + vhf
-    nkpts = h1e.shape[0]
-    
-    logger.info(mf, 'Checking hcore, vhf matrices are hermitian')
-    for k in range(nkpts):
-        assert is_hermitian(h1e[k])
-        assert is_hermitian(vhf[0][k])
-        assert is_hermitian(vhf[1][k])
-
     if cycle < 0 and diis is None:  # Not inside the SCF iteration
         return f
 
     if diis_start_cycle is None:
         diis_start_cycle = mf.diis_start_cycle
-
     if level_shift_factor is None:
         level_shift_factor = mf.level_shift
-
     if damp_factor is None:
         damp_factor = mf.damp
-
     if s1e is None: s1e = mf.get_ovlp()
     if dm is None: dm = mf.make_rdm1()
 
     if 0 <= cycle < diis_start_cycle-1 and abs(damp_factor) > 1e-4:
         f = damping(s1e, dm*.5, f, damp_factor)
-
     if diis is not None and cycle >= diis_start_cycle:
         f = diis.update(s1e, dm, f, mf, h1e, vhf)
-
     if abs(level_shift_factor) > 1e-4:
         f = level_shift(s1e, dm*.5, f, level_shift_factor)
-
     return f
 
 def get_occ(mf, mo_energy=None, mo_coeff=None):
@@ -1612,7 +1553,6 @@ class SCF(lib.StreamObject):
         log.info('initial guess = %s', self.init_guess)
         log.info('damping factor = %g', self.damp)
         log.info('level_shift factor = %s', self.level_shift)
-        log.info('diis = %s', self.diis)
         if isinstance(self.diis, lib.diis.DIIS):
             log.info('DIIS = %s', self.diis)
             log.info('diis_start_cycle = %d', self.diis_start_cycle)
@@ -1797,7 +1737,7 @@ class SCF(lib.StreamObject):
 
         self.dump_flags()
         self.build(self.mol)
-        
+
         if self.max_cycle > 0 or self.mo_coeff is None:
             self.converged, self.e_tot, \
                     self.mo_energy, self.mo_coeff, self.mo_occ = \

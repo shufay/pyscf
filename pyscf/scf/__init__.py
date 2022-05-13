@@ -101,6 +101,7 @@ Saved results
 
 '''
 
+import pyscf
 from pyscf.scf import hf
 rhf = hf
 from pyscf.scf import rohf
