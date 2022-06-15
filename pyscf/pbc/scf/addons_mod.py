@@ -52,6 +52,7 @@ def project_mo_nr2nr(cell1, mo1, cell2, kpts=None):
         return [scipy.linalg.solve(s22[k], s21[k].dot(mo1[k]), sym_pos=True)
                 for k, kpt in enumerate(kpts)]
 
+
 def smearing_(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
     '''Fermi-Dirac or Gaussian smearing'''
     from pyscf.scf import uhf
@@ -66,7 +67,12 @@ def smearing_(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
     def fermi_smearing_occ(m, mo_energy_kpts, sigma):
         occ = numpy.zeros_like(mo_energy_kpts)
         de = (mo_energy_kpts - m) / sigma
+        print(f'de[de<40] = {de[de<40]}\n')
         occ[de<40] = 1./(numpy.exp(de[de<40])+1.)
+        print(f'numpy.exp(de[de<40])+1. = {numpy.exp(de[de<40])+1.}\n')
+        print(f'1./(numpy.exp(de[de<40])+1.) = {1./(numpy.exp(de[de<40])+1.)}\n')
+        print(f'occ[de<40] = {occ[de<40]}')
+        print(f'occ.shape = {occ.shape}')
         return occ
     def gaussian_smearing_occ(m, mo_energy_kpts, sigma):
         return 0.5 * scipy.special.erfc((mo_energy_kpts - m) / sigma)
@@ -85,22 +91,28 @@ def smearing_(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
 
         This is a k-point version of scf.hf.SCF.get_occ
         '''
-        mo_occ_kpts = mf_class.get_occ(mf, mo_energy_kpts, mo_coeff_kpts)
+        #mo_occ_kpts = mf_class.get_occ(mf, mo_energy_kpts, mo_coeff_kpts)
+        mo_occ_kpts, e_fermi = mf.get_occ(mo_energy_kpts, mo_coeff_kpts)
         if (mf.sigma == 0) or (not mf.sigma) or (not mf.smearing_method):
             return mo_occ_kpts
 
         if is_khf:
             nkpts = len(mf.kpts)
+            print(f'mf.nkpts = {nkpts}')
         else:
             nkpts = 1
         if isinstance(mf.mol, pbcgto.Cell):
             nelectron = mf.mol.tot_electrons(nkpts)
+            print(f'mf.mol.tot_electrons(nkpts) = {nelectron}')
         else:
             nelectron = mf.mol.tot_electrons()
         if is_uhf:
+            print('is uhf!')
             nocc = nelectron
-            mo_es = numpy.append(numpy.hstack(mo_energy_kpts[0]),
-                                 numpy.hstack(mo_energy_kpts[1]))
+            mo_es = numpy.array([numpy.hstack(mo_energy_kpts[0]),
+                                 numpy.hstack(mo_energy_kpts[1])])
+            #mo_es = numpy.append(numpy.hstack(mo_energy_kpts[0]),
+            #                     numpy.hstack(mo_energy_kpts[1]))
         elif is_ghf:
             nocc = nelectron
             mo_es = numpy.hstack(mo_energy_kpts)
@@ -117,20 +129,26 @@ def smearing_(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
 
         # If mu0 is given, fix mu instead of electron number. XXX -Chong Sun
         sigma = mf.sigma
-        fermi = mo_energy[nocc-1]
+        nocc_up, nocc_down = mf.nelec
+        print(f'mo_es.shape = {mo_es.shape}')
+        fermi_up = mo_es[0][nocc_up-1]
+        fermi_down = mo_es[1][nocc_down-1]
+        fermi = max(fermi_up, fermi_down)
+        #fermi = mo_energy[nocc-1]
+        print(f'mf.nelec = {mf.nelec}')
+        print(f'mo_es.shape = {mo_es.shape}')
+        print(f'mo_energy.shape = {mo_energy.shape}')
+        print(f'nocc = {nocc}')
+        print(f'fermi = {fermi}')
+        print(f'e_fermi = {e_fermi}')
         if mu0 is None:
             def nelec_cost_fn(m):
                 mo_occ_kpts = f_occ(m, mo_es, sigma)
                 if is_rhf:
                     mo_occ_kpts *= 2
-                print(f'\nNELEC_COST_FN: mo_occ_kpts.sum() = {mo_occ_kpts.sum()}')
-                print(f'\nNELEC_COST_FN: nelectron = {nelectron}')
                 return (mo_occ_kpts.sum() - nelectron)**2
             res = scipy.optimize.minimize(nelec_cost_fn, fermi, method='Powell')
             mu = res.x
-            print(f'\nMU0 = {fermi}')
-            print(f'MINIMIZED MU = {mu}')
-            print(f'mu.success = {res.success}')
             mo_occs = f = f_occ(mu, mo_es, sigma)
         else:
             mu = mu0
@@ -149,6 +167,7 @@ def smearing_(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
 
         # DO NOT use numpy.array for mo_occ_kpts and mo_energy_kpts, they may
         # have different dimensions for different k-points
+        """
         if is_uhf:
             if is_khf:
                 nao_tot = mo_occs.size//2
@@ -161,247 +180,12 @@ def smearing_(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
                 mo_occ_kpts = partition_occ(mo_occs, mo_energy_kpts)
             else:
                 mo_occ_kpts = mo_occs
-
+        """
         logger.debug(mf, '    Fermi level %g  Sum mo_occ_kpts = %s  should equal nelec = %s',
                      fermi, mo_occs.sum(), nelectron)
         logger.info(mf, '    sigma = %g  Optimized mu = %.12g  entropy = %.12g',
                     mf.sigma, mu, mf.entropy)
 
-        print('\nMO_OCC_KPTS')
-        for s in range(2):
-            print(f'\ns = {s}')
-            for i, mo_occ_kpt in enumerate(mo_occ_kpts[s]):
-                print(f'\nidxk = {i}') 
-                print(mo_occ_kpt)
-
-        return mo_occ_kpts
-
-    def get_grad_tril(mo_coeff_kpts, mo_occ_kpts, fock):
-        if is_khf:
-            grad_kpts = []
-            for k, mo in enumerate(mo_coeff_kpts):
-                f_mo = reduce(numpy.dot, (mo.T.conj(), fock[k], mo))
-                nmo = f_mo.shape[0]
-                grad_kpts.append(f_mo[numpy.tril_indices(nmo, -1)])
-            return numpy.hstack(grad_kpts)
-        else:
-            f_mo = reduce(numpy.dot, (mo_coeff_kpts.T.conj(), fock, mo_coeff_kpts))
-            nmo = f_mo.shape[0]
-            return f_mo[numpy.tril_indices(nmo, -1)]
-
-    def get_grad(mo_coeff_kpts, mo_occ_kpts, fock=None):
-        if (mf.sigma == 0) or (not mf.sigma) or (not mf.smearing_method):
-            return mf_class.get_grad(mf, mo_coeff_kpts, mo_occ_kpts, fock)
-        if fock is None:
-            dm1 = mf.make_rdm1(mo_coeff_kpts, mo_occ_kpts)
-            fock = mf.get_hcore() + mf.get_veff(mf.mol, dm1)
-        if is_uhf:
-            ga = get_grad_tril(mo_coeff_kpts[0], mo_occ_kpts[0], fock[0])
-            gb = get_grad_tril(mo_coeff_kpts[1], mo_occ_kpts[1], fock[1])
-            return numpy.hstack((ga,gb))
-        else: # rhf and ghf
-            return get_grad_tril(mo_coeff_kpts, mo_occ_kpts, fock)
-
-    def energy_tot(dm=None, h1e=None, vhf=None):
-        e_tot = mf.energy_elec(dm, h1e, vhf)[0] + mf.energy_nuc()
-        if (mf.sigma and mf.smearing_method and
-            mf.entropy is not None):
-            mf.e_free = e_tot - mf.sigma * mf.entropy
-            mf.e_zero = e_tot - mf.sigma * mf.entropy * .5
-            logger.info(mf, '    Total E(T) = %.15g  Free energy = %.15g  E0 = %.15g',
-                        e_tot, mf.e_free, mf.e_zero)
-        return e_tot
-
-    mf.sigma = sigma
-    mf.smearing_method = method
-    mf.entropy = None
-    mf.e_free = None
-    mf.e_zero = None
-    mf._keys = mf._keys.union(['sigma', 'smearing_method',
-                               'entropy', 'e_free', 'e_zero'])
-
-    mf.get_occ = get_occ
-    mf.energy_tot = energy_tot
-    mf.get_grad = get_grad
-    return mf
-
-def smearing_v3(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
-    '''Fermi-Dirac or Gaussian smearing'''
-    from pyscf.scf import uhf
-    from pyscf.scf import ghf
-    from pyscf.pbc.scf import khf
-    mf_class = mf.__class__
-    is_uhf = isinstance(mf, uhf.UHF)
-    is_ghf = isinstance(mf, ghf.GHF)
-    is_rhf = (not is_uhf) and (not is_ghf)
-    is_khf = isinstance(mf, khf.KSCF)
-
-    def fermi_smearing_occ(m, mo_energy_kpts, sigma):
-        # Returns `occ` in the shape of `mo_energy_kpts`.
-        occ = numpy.zeros_like(mo_energy_kpts)
-        de = (mo_energy_kpts - m) / sigma
-        # Only apply fractional occupation for orbitals with energies 40 units
-        # of sigma away from m.
-        occ[de<40] = 1./(numpy.exp(de[de<40])+1.)
-        #print(f'fermi_smearing_occ: mo_energy_kpts.shape = {mo_energy_kpts.shape}')
-        #print(f'fermi_smearing_occ: occ.shape = {occ.shape}')
-        return occ
-
-    def gaussian_smearing_occ(m, mo_energy_kpts, sigma):
-        # Returns `occ` in the shape of `mo_energy_kpts`.
-        # Apply fractional occupation for all orbitals.
-        return 0.5 * scipy.special.erfc((mo_energy_kpts - m) / sigma)
-
-    def partition_occ(mo_occ, mo_energy_kpts):
-        # Reshapes `mo_occ` to shape (2, nkpts, nbasis).
-        mo_occ_kpts = []
-        p1 = 0
-
-        for e in mo_energy_kpts: # Loop over kpts.
-            #print(f'partition_occ: e.size = {e.size}')
-            p0, p1 = p1, p1 + e.size # e.size = nbasis
-            occ = mo_occ[p0:p1]
-            mo_occ_kpts.append(occ)
-
-        #print(f'partition_occ: mo_occ_kpts.shape = {numpy.array(mo_occ_kpts).shape}')
-        #print(f'partition_occ: mo_energy_kpts.shape = {numpy.array(mo_energy_kpts).shape}')
-        return mo_occ_kpts
-
-    def get_occ(mo_energy_kpts=None, mo_coeff_kpts=None):
-        '''Label the occupancies for each orbital for sampled k-points.
-
-        This is a k-point version of scf.hf.SCF.get_occ
-        '''
-        mo_occ_kpts = mf_class.get_occ(mf, mo_energy_kpts, mo_coeff_kpts)
-        if (mf.sigma == 0) or (not mf.sigma) or (not mf.smearing_method):
-            return mo_occ_kpts
-
-        if is_khf: nkpts = len(mf.kpts)
-        else: nkpts = 1
-
-        #if isinstance(mf.mol, pbcgto.Cell): nelectron = mf.mol.tot_electrons(nkpts)
-        #else: nelectron = mf.mol.tot_electrons()
-        nelectron = mf.nelec.sum()
-
-        if is_uhf:
-            nocc = nelectron
-            nocca, noccb = mf.nelec
-            mo_es = numpy.append(numpy.hstack(mo_energy_kpts[0]),
-                                 numpy.hstack(mo_energy_kpts[1]))
-
-            if noccb == 0: # Only smear alpha electrons.
-                mo_es = numpy.hstack(mo_energy_kpts[0])
-
-            #print(f'mo_es.shape = {mo_es.shape}')
-
-        elif is_ghf:
-            nocc = nelectron
-            mo_es = numpy.hstack(mo_energy_kpts)
-
-        else:
-            nocc = nelectron // 2
-            mo_es = numpy.hstack(mo_energy_kpts)
-
-        if mf.smearing_method.lower() == 'fermi':  # Fermi-Dirac smearing
-            f_occ = fermi_smearing_occ
-
-        else:  # Gaussian smearing
-            f_occ = gaussian_smearing_occ
-
-        # Array of all orbital energies sorted in increasing energy.
-        mo_energy = numpy.sort(mo_es.ravel())
-        #print(f'mo_energy.shape = {mo_energy.shape}')
-
-        # If mu0 is given, fix mu instead of electron number. XXX -Chong Sun
-        sigma = mf.sigma
-        fermi = mo_energy[nocc-1] # Guess for fermi energy.
-
-        if mu0 is None:
-            def nelec_cost_fn(m):
-                mo_occ_kpts = f_occ(m, mo_es, sigma)
-                if is_rhf:
-                    mo_occ_kpts *= 2
-
-                #print(f'\nNELEC_COST_FN: mo_occ_kpts.sum() = {mo_occ_kpts.sum()}')
-                #print(f'NELEC_COST_FN: nelectron = {nelectron}')
-                return (mo_occ_kpts.sum() - nelectron)**2
-
-            res = scipy.optimize.minimize(nelec_cost_fn, fermi, method='Powell')
-            mu = res.x
-            #print(f'\nMU0 = {fermi}')
-            #print(f'MINIMIZED MU = {mu}')
-            #print(f'mu.success = {res.success}')
-            mo_occs = f = f_occ(mu, mo_es, sigma)
-
-            # Pad with 0s for beta electrons to keep ndarray shape consistent.
-            if noccb == 0:
-                mo_occs = numpy.append(mo_occs, numpy.zeros_like(mo_occs))
-
-            #print(f'mo_occs.shape = {mo_occs.shape}')
-
-        else:
-            mu = mu0
-            mo_occs = f = f_occ(mu, mo_es, sigma)
-            # Pad with 0s for beta electrons to keep ndarray shape consistent.
-            if noccb == 0:
-                mo_occs = numpy.append(mo_occs, numpy.zeros_like(mo_occs))
-
-        # See https://www.vasp.at/vasp-workshop/slides/k-points.pdf
-        if mf.smearing_method.lower() == 'fermi':
-            f = f[(f>0) & (f<1)]
-            mf.entropy = -(f*numpy.log(f) + (1-f)*numpy.log(1-f)).sum() / nkpts
-
-        else:
-            _mo_es = numpy.append(numpy.hstack(mo_energy_kpts[0]),
-                                  numpy.hstack(mo_energy_kpts[1]))
-            mf.entropy = (numpy.exp(-((_mo_es-mu)/mf.sigma)**2).sum()
-                          / (2*numpy.sqrt(numpy.pi)) / nkpts)
-
-        if is_rhf:
-            mo_occs *= 2
-            mf.entropy *= 2
-
-        # DO NOT use numpy.array for mo_occ_kpts and mo_energy_kpts, they may
-        # have different dimensions for different k-points
-        if is_uhf:
-            if is_khf:
-                """
-                if noccb == 0:
-                    print(f'mo_occ_kpts.shape = {numpy.array(mo_occ_kpts).shape}')
-                    mo_occ_kpts_a = partition_occ(mo_occs, mo_energy_kpts[0])
-                    mo_occ_kpts_b = numpy.zeros_like(mo_occ_kpts_a)
-                    mo_occ_kpts = (mo_occ_kpts_a, mo_occ_kpts_b)
-                
-                else:
-                    nao_tot = mo_occs.size//2
-                    mo_occ_kpts = (partition_occ(mo_occs[:nao_tot], mo_energy_kpts[0]),
-                                   partition_occ(mo_occs[nao_tot:], mo_energy_kpts[1]))
-                    print(f'nao_tot = {nao_tot}')
-                """
-                nao_tot = mo_occs.size//2
-                # `mo_occ_kpts` has shape (2, nkpts, nbasis).
-                mo_occ_kpts = (partition_occ(mo_occs[:nao_tot], mo_energy_kpts[0]), # alpha
-                               partition_occ(mo_occs[nao_tot:], mo_energy_kpts[1])) # beta
-                #print(f'nao_tot = {nao_tot}')
-                #print(f'mo_occ_kpts[0].shape = {numpy.array(mo_occ_kpts[0]).shape}')
-                #print(f'mo_occ_kpts[1].shape = {numpy.array(mo_occ_kpts[1]).shape}')
-
-            else: mo_occ_kpts = partition_occ(mo_occs, mo_energy_kpts)
-
-        else: # rhf and ghf
-            if is_khf: mo_occ_kpts = partition_occ(mo_occs, mo_energy_kpts)
-            else: mo_occ_kpts = mo_occs
-
-        logger.debug(mf, '    Fermi level %g  Sum mo_occ_kpts = %s  should equal nelec = %s',
-                     fermi, mo_occs.sum(), nelectron)
-        logger.info(mf, '    sigma = %g  Optimized mu = %.12g  entropy = %.12g',
-                    mf.sigma, mu, mf.entropy)
-        
-        logger.debug(mf, '\nMO_OCC_KPTS[0]')
-        for i, mo_occ_kpt in enumerate(mo_occ_kpts[0]):
-            logger.debug(mf, '\nidxk = %s', i) 
-            logger.debug(mf, '%s', numpy.array2string(mo_occ_kpt))
-        
         return mo_occ_kpts
 
     def get_grad_tril(mo_coeff_kpts, mo_occ_kpts, fock):
