@@ -239,10 +239,16 @@ def smearing_v3(mf, sigma=None, method=SMEARING_METHOD, mu0=None):
     def fermi_smearing_occ(m, mo_energy_kpts, sigma):
         # Returns `occ` in the shape of `mo_energy_kpts`.
         occ = numpy.zeros_like(mo_energy_kpts)
-        de = (mo_energy_kpts - m) / sigma
+        
+        # Can throw "divide_by_zero" error for small sigma (~1e-10).
+        de = (mo_energy_kpts - m) / sigma  
         # Only apply fractional occupation for orbitals with energies 40 units
         # of sigma away from m.
         occ[de<40] = 1./(numpy.exp(de[de<40])+1.)
+        #print('=========================')
+        #print(f'de[de<40] = {de[de<40]}')
+        #print('=========================')
+        #exit()
         #print(f'fermi_smearing_occ: mo_energy_kpts.shape = {mo_energy_kpts.shape}')
         #print(f'fermi_smearing_occ: occ.shape = {occ.shape}')
         return occ
