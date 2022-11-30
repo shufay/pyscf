@@ -1,6 +1,11 @@
 name: Create release
 
-on: [workflow_dispatch]
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'pyscf/__init__.py'
 
 jobs:
   create-release:
