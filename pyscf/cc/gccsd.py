@@ -369,6 +369,14 @@ def _make_eris_incore(mycc, mo_coeff=None, ao2mofn=None):
 
     if callable(ao2mofn):
         eri = ao2mofn(eris.mo_coeff).reshape([nmo]*4)
+    elif eris.mo_coeff.dtype == np.complex:
+        print('WARNING: complex-valued MO coefficients!')
+        # Only considering eris.orbspin = NONE.
+        # Convert from AO to MO basis.
+        eri = np.einsum('pqrs,pi,qj,rk,sl->ijkl', mycc._scf._eri,
+                        eris.mo_coeff.conj(), eris.mo_coeff,
+                        eris.mo_coeff.conj(), eris.mo_coeff,
+                        optimize=True)
     else:
         assert (eris.mo_coeff.dtype == np.double)
         mo_a = eris.mo_coeff[:nao//2]
