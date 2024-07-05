@@ -314,7 +314,7 @@ def g_r(grids_coor, site, l, mr, r, zona, x_axis=[1,0,0], z_axis=[0,0,1], unit='
     phi = np.empty_like(r_norm)
     larger_idx = r_vec[:, 0] > 1e-8
     smaller_idx = r_vec[:, 0] < -1e-8
-    neither_idx = not larger_idx and not smaller_idx
+    neither_idx = np.logical_not(larger_idx) & np.logical_not(smaller_idx)
     phi[larger_idx] = np.arctan(r_vec[larger_idx,1]/r_vec[larger_idx,0])
     phi[smaller_idx] = np.arctan(r_vec[smaller_idx,1]/r_vec[smaller_idx,0])  + np.pi
     phi[neither_idx] = np.sign(r_vec[neither_idx,1]) * 0.5 * np.pi
