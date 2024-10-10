@@ -101,11 +101,7 @@ Saved results
 
 '''
 
-<<<<<<< HEAD
-import pyscf
-=======
 from pyscf import gto
->>>>>>> 57d091ee8135b52b3a0f5ee4878d69b5368a5aa6
 from pyscf.scf import hf
 rhf = hf
 from pyscf.scf import rohf
